@@ -1,0 +1,43 @@
+# Configuration for Stage 0: Chain-of-Thought baseline training with Qwen3-0.6B
+# This trains a standard CoT model that will be used as initialization for Coconut
+
+project: coconut-qwen
+save_path: ./checkpoints
+name: qwen-cot
+
+only_eval: False
+
+# Training mode: CoT (no latent reasoning)
+coconut: False
+cot: True
+no_thoughts: False
+no_cot: False
+
+# Coconut hyperparameters (not used in CoT mode)
+c_thought: 0
+epochs_per_stage: 1
+max_latent_stage: 0
+pad_latent_to_max: False
+
+save_only_improve: False
+uniform_prob: 0.0
+
+# Model
+model_id: Qwen/Qwen3-0.6B
+load_model_path: None
+seed: 42
+resume: 0
+bf16: True
+
+# Data paths (update these to your data location)
+train_path: data/gsm_train.json
+val_path: data/gsm_valid.json
+
+# Optimizer settings
+reset_optimizer: False
+batch_size_training: 8
+debug: False
+gradient_accumulation_steps: 4
+num_epochs: 10
+lr: !!float "1e-4"
+weight_decay: 0.01

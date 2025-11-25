@@ -1,0 +1,43 @@
+# Configuration for evaluating Coconut model with Qwen3-0.6B
+
+project: coconut-qwen
+save_path: ./checkpoints
+name: qwen-coconut-eval
+
+only_eval: True
+
+# Training mode: Coconut (latent reasoning)
+coconut: True
+cot: False
+no_thoughts: False
+no_cot: False
+
+# Coconut hyperparameters (must match training config)
+c_thought: 2
+epochs_per_stage: 3
+max_latent_stage: 3
+pad_latent_to_max: True
+
+save_only_improve: False
+uniform_prob: 0.0
+
+# Model
+model_id: Qwen/Qwen3-0.6B
+# Load the trained Coconut checkpoint
+load_model_path: ./checkpoints/qwen-coconut/checkpoint_25
+seed: 42
+resume: 0
+bf16: True
+
+# Data paths (use test set for final evaluation)
+train_path: data/gsm_train.json
+val_path: data/gsm_test.json
+
+# Optimizer settings (not used in eval mode)
+reset_optimizer: False
+batch_size_training: 8
+debug: False
+gradient_accumulation_steps: 1
+num_epochs: 1
+lr: !!float "1e-4"
+weight_decay: 0.01

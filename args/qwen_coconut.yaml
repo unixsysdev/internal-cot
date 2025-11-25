@@ -1,0 +1,44 @@
+# Configuration for Coconut training with Qwen3-0.6B
+# Multi-stage training with continuous thoughts
+
+project: coconut-qwen
+save_path: ./checkpoints
+name: qwen-coconut
+
+only_eval: False
+
+# Training mode: Coconut (latent reasoning)
+coconut: True
+cot: False
+no_thoughts: False
+no_cot: False
+
+# Coconut hyperparameters
+c_thought: 2           # Number of continuous thoughts per reasoning step
+epochs_per_stage: 3    # Epochs per training stage
+max_latent_stage: 3    # Maximum number of latent stages (3 for GSM8k)
+pad_latent_to_max: True
+
+save_only_improve: False
+uniform_prob: 0.0
+
+# Model
+model_id: Qwen/Qwen3-0.6B
+# Load the pre-trained CoT checkpoint from Stage 0
+load_model_path: ./checkpoints/qwen-cot/checkpoint_10
+seed: 42
+resume: 3              # Skip first 3 epochs (stage 0), start at stage 1
+bf16: True
+
+# Data paths (update these to your data location)
+train_path: data/gsm_train.json
+val_path: data/gsm_valid.json
+
+# Optimizer settings
+reset_optimizer: True  # Reset optimizer when switching stages
+batch_size_training: 8
+debug: False
+gradient_accumulation_steps: 4
+num_epochs: 25
+lr: !!float "1e-4"
+weight_decay: 0.01

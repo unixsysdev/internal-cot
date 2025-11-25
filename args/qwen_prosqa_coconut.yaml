@@ -1,0 +1,43 @@
+# Configuration for Coconut training on ProsQA with Qwen3-0.6B
+# ProsQA requires more stages due to longer reasoning chains
+
+project: coconut-qwen
+save_path: ./checkpoints
+name: qwen-prosqa-coconut
+
+only_eval: False
+
+# Training mode: Coconut (latent reasoning)
+coconut: True
+cot: False
+no_thoughts: False
+no_cot: False
+
+# Coconut hyperparameters for ProsQA
+c_thought: 1           # 1 continuous thought per reasoning step (as in paper)
+epochs_per_stage: 5    # More epochs per stage for logical reasoning
+max_latent_stage: 6    # 6 stages for ProsQA (matches max reasoning steps)
+pad_latent_to_max: True
+
+save_only_improve: True
+uniform_prob: 0.0
+
+# Model
+model_id: Qwen/Qwen3-0.6B
+load_model_path: None  # Train from scratch or specify CoT checkpoint
+seed: 42
+resume: 0
+bf16: True
+
+# Data paths for ProsQA
+train_path: data/prosqa_train.json
+val_path: data/prosqa_valid.json
+
+# Optimizer settings
+reset_optimizer: True
+batch_size_training: 16
+debug: False
+gradient_accumulation_steps: 2
+num_epochs: 50
+lr: !!float "1e-4"
+weight_decay: 0.01
