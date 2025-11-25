@@ -26,9 +26,52 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 - `args/qwen_coconut_eval.yaml`: Evaluation configuration
 - `args/qwen_prosqa_coconut.yaml`: ProsQA dataset configuration
 
-### Testing
+### Testing & Demo
 
 - `test_qwen_coconut.py`: Test script to verify the implementation
+- `demo_train.py`: Quick training and inference demo
+
+## Quick Demo
+
+To see Coconut in action with minimal setup:
+
+```bash
+# Setup environment
+./setup_env.sh
+source coconut_env/bin/activate
+
+# Run the demo (2-5 min on CPU, ~30s on GPU)
+python demo_train.py
+```
+
+The demo will:
+1. Load Qwen3-0.6B and add Coconut special tokens
+2. Show inference before training
+3. Train for 10 steps on arithmetic problems
+4. Show inference after training with loss comparison
+
+Example output:
+```
+Device: cpu
+Training steps: 10
+Latent tokens: 2
+
+>>> Before Training:
+Q: What is 3 + 4?
+A: <thinking output>
+
+Training...
+Step 5/10, Loss: 1.6142
+Step 10/10, Loss: 2.0395
+
+Initial loss: 8.2619
+Final loss: 2.0395
+Loss change: -6.2223
+
+>>> After Training:
+Q: What is 3 + 4?
+A: <generated output>
+```
 
 ## Environment Setup
 
@@ -73,12 +116,12 @@ pip install -r requirements.txt
 ### Requirements
 
 The `requirements.txt` includes:
-- `torch==2.5.1` - PyTorch deep learning framework
-- `numpy==2.1.3` - Numerical computing
-- `transformers==4.46.2` - Hugging Face Transformers
-- `wandb==0.18.7` - Weights & Biases logging
-- `datasets==3.1.0` - Hugging Face Datasets
-- `tqdm==4.67.0` - Progress bars
+- `torch>=2.0.0` - PyTorch deep learning framework
+- `numpy>=1.24.0` - Numerical computing
+- `transformers>=4.40.0` - Hugging Face Transformers
+- `wandb>=0.15.0` - Weights & Biases logging
+- `datasets>=2.14.0` - Hugging Face Datasets
+- `tqdm>=4.65.0` - Progress bars
 - `pyyaml>=6.0` - YAML configuration parsing
 - `accelerate>=0.25.0` - Hugging Face Accelerate for distributed training
 
