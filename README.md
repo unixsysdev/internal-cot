@@ -197,6 +197,74 @@ The confidence head predicts "readiness to answer" after each latent token, allo
 | `epochs_per_stage` | Epochs per training stage | 3-5 |
 | `max_latent_stage` | Maximum latent stages | 3-6 |
 
+## Limitations & Future Directions
+
+### Current Limitations
+
+**1. Distillation Ceiling**
+The curriculum training (CoT → Latent) means latent reasoning quality is bounded by CoT data quality. The model cannot discover reasoning patterns not present in training.
+
+**2. Hidden State Geometry Mismatch**
+Transformer hidden states are optimized for next-token prediction, not iterative self-refinement. Feeding h_t back as input asks "what token has this embedding?" - but h_t wasn't trained to be a valid embedding.
+
+**3. Interpretability Loss**
+No visibility into latent reasoning steps. Cannot inspect, verify, or correct intermediate thoughts.
+
+**4. Task Generalization**
+Original paper shows Coconut underperforms CoT on GSM8k (34.1% vs 42.9%) but excels on synthetic ProsQA (97.0% vs 77.5%). Works best on structured, repetitive reasoning patterns.
+
+### Research Directions
+
+**1. Entropy-Based Confidence**
+Replace the position-based confidence target with output distribution entropy:
+```python
+confidence = 1 - H(p(x_{t+1} | latent_state))
+```
+Low entropy = high confidence = ready to answer. This measures actual reasoning completeness, not training format.
+
+**2. Gradient-Based Stopping**
+Use gradient magnitude as confidence signal:
+```python
+confidence = 1 / ||∇_h L||
+```
+Small gradient indicates stable hidden state, suggesting sufficient reasoning.
+
+**3. Hybrid Checkpointing**
+Instead of pure latent reasoning, emit periodic "checkpoint" tokens:
+```
+[Question] <latent> <latent> <checkpoint: partial> <latent> <latent> <answer>
+```
+Preserves some interpretability while reducing token cost. Enables human inspection and correction.
+
+**4. MCTS in Continuous Space**
+The BFS-like behavior (hidden states encoding multiple hypotheses) could combine with Monte Carlo Tree Search:
+- Latent "branches" as continuous value estimates
+- Tree search over hidden state trajectories
+- Backprop through successful paths
+
+**5. Contrastive Hidden State Training**
+Train hidden states explicitly for reasoning quality:
+```python
+L_contrastive = -log(sim(h_correct, h_positive) / Σ sim(h_correct, h_negative))
+```
+Force the hidden state manifold to separate correct from incorrect reasoning paths.
+
+**6. Learned "Continue Thinking" Token**
+Instead of external confidence head, train the model to output `<think-more>` or `<ready>` autoregressively. The model learns its own metacognition.
+
+**7. Tool-Augmented Latent Reasoning**
+Allow the model to "break out" of latent mode to call external tools:
+```
+<latent> <latent> <tool:calculator> 2+2=4 <latent> <answer>
+```
+Combines latent efficiency with verifiable computation.
+
+### Scaling Considerations
+
+- **Diminishing returns at scale**: Large models already have rich hidden representations; bottleneck removal matters less
+- **Compute trade-off**: Saves tokens but loses interpretability - may not be worth it for safety-critical applications
+- **Best use case**: High-throughput inference on structured reasoning tasks where interpretability is not required
+
 ## Troubleshooting
 
 **Environment issues:**
