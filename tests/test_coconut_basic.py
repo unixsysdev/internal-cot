@@ -4,9 +4,12 @@ Test script for Coconut with Qwen3-0.6B.
 This script verifies that the implementation works correctly.
 """
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import json
-import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from coconut_qwen import CoconutQwen
 from dataset_qwen import (

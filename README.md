@@ -15,9 +15,11 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 ### Core Implementation
 
 - `coconut_qwen.py`: Core CoconutQwen model wrapper that implements the continuous thought mechanism
+- `coconut_adaptive.py`: **Adaptive Coconut** with confidence-based dynamic latent count
 - `dataset_qwen.py`: Dataset processing utilities adapted for Qwen3 tokenizer
 - `run_qwen.py`: Training script supporting both single-GPU and distributed training
 - `utils.py`: Utility functions (Config class, seed setting)
+- `data/reasoning_dataset.py`: Diverse reasoning problems (arithmetic, logic, word problems)
 
 ### Configuration Files
 
@@ -28,8 +30,9 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 
 ### Testing & Demo
 
-- `test_qwen_coconut.py`: Test script to verify the implementation
-- `demo_train.py`: Quick training and inference demo
+- `tests/test_coconut_basic.py`: Basic Coconut implementation tests
+- `tests/test_adaptive_coconut.py`: Adaptive latent mechanism tests
+- `demo_train.py`: Curriculum training demo
 
 ## Quick Demo
 
@@ -96,7 +99,7 @@ chmod +x setup_env.sh
 source coconut_env/bin/activate
 
 # Verify installation by running tests
-python test_qwen_coconut.py
+python tests/test_coconut_basic.py
 ```
 
 ### Manual Setup
@@ -139,27 +142,14 @@ After setting up the environment, run the test script to verify everything works
 # Activate environment if not already active
 source coconut_env/bin/activate
 
-# Run tests
-python test_qwen_coconut.py
-```
+# Run basic tests
+python tests/test_coconut_basic.py
 
-Expected output:
-```
-Running Coconut Qwen3-0.6B Tests
-============================================================
-Test 1: Model Loading
-...
-Test 2: Coconut Wrapper
-...
-Test 3: Generation
-...
-Test 4: Dataset Processing
-...
-Test 5: Collator
-...
-============================================================
-ALL TESTS PASSED!
-============================================================
+# Run adaptive latent tests (quick mode)
+python tests/test_adaptive_coconut.py --quick
+
+# Run full adaptive test suite (~10-15 min)
+python tests/test_adaptive_coconut.py
 ```
 
 ## Usage
@@ -266,6 +256,65 @@ Based on the paper (Table 1):
 | ProsQA | 76.7% | 77.5% | 97.0% |
 
 Note: These results are from GPT-2. Performance may vary with Qwen3-0.6B.
+
+## Adaptive Latent Reasoning (Experimental)
+
+The standard Coconut uses a fixed number of latent tokens. The adaptive extension (`coconut_adaptive.py`) adds **confidence-based dynamic latent count**:
+
+### How It Works
+
+1. A small **confidence head** is trained alongside the main model
+2. After each latent token, the confidence head predicts "readiness to answer"
+3. During inference, latent tokens are added until confidence exceeds threshold
+4. Result: **more thinking for hard problems, less for easy ones**
+
+### Architecture
+
+```
+Hidden State → [Linear → GELU → Dropout → Linear → Sigmoid] → Confidence [0,1]
+```
+
+### Usage
+
+```python
+from coconut_adaptive import AdaptiveCoconutQwen
+
+model = AdaptiveCoconutQwen(
+    base_model,
+    latent_token_id=latent_id,
+    start_latent_id=start_id,
+    end_latent_id=end_id,
+    eos_token_id=eos_id,
+    max_latent_tokens=8,       # Maximum latent tokens
+    confidence_threshold=0.7,   # Exit when confidence > 0.7
+)
+
+# Adaptive generation
+outputs, num_latent_used = model.generate_adaptive(
+    input_ids,
+    attention_mask,
+    min_latent=1,
+    max_latent=6,
+    verbose=True,  # Print confidence at each step
+)
+```
+
+### Training
+
+The confidence head is trained jointly with the base model:
+- **Target**: 0 for early latent positions, 1 for the last latent before answer
+- **Loss**: Binary cross-entropy, weighted at 0.1x the main loss
+
+```python
+outputs = model(input_ids, attention_mask, labels, position_ids)
+total_loss = outputs.loss + 0.1 * outputs.confidence_loss
+```
+
+### Future Directions
+
+- Perplexity-based latent count estimation
+- Learned "continue thinking" token
+- Domain-specific latent budgets
 
 ## Differences from Original Implementation
 
