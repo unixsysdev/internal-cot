@@ -33,45 +33,51 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 
 ## Quick Demo
 
-To see Coconut in action with minimal setup:
+To see the Coconut curriculum training in action:
 
 ```bash
 # Setup environment
 ./setup_env.sh
 source coconut_env/bin/activate
 
-# Run the demo (2-5 min on CPU, ~30s on GPU)
+# Run the demo (~10-15 min on CPU, ~2-3 min on GPU)
 python demo_train.py
 ```
 
-The demo will:
-1. Load Qwen3-0.6B and add Coconut special tokens
-2. Show inference before training
-3. Train for 10 steps on arithmetic problems
-4. Show inference after training with loss comparison
+The demo shows the **actual Coconut training approach**:
+1. **Stage 0**: Train with full Chain-of-Thought (explicit reasoning)
+2. **Stage 1**: Replace first reasoning step with latent tokens
+3. **Stage 2**: Replace all reasoning steps with latent tokens
 
 Example output:
 ```
-Device: cpu
-Training steps: 10
-Latent tokens: 2
+TRAINING FORMAT EXAMPLES:
+Stage 0 (Full CoT):
+  Q: What is 3 + 5?
+  First, I need to add 3 and 5. 3 plus 5 equals 8. Answer: 8
 
->>> Before Training:
-Q: What is 3 + 4?
-A: <thinking output>
+Stage 1 (Replace step 1):
+  Q: What is 3 + 5?
+  <|start-latent|><|latent|><|latent|><|end-latent|> 3 plus 5 equals 8. Answer: 8
 
-Training...
-Step 5/10, Loss: 1.6142
-Step 10/10, Loss: 2.0395
+Stage 2 (Replace steps 1&2):
+  Q: What is 3 + 5?
+  <|start-latent|><|latent|>...<|end-latent|> Answer: 8
 
-Initial loss: 8.2619
-Final loss: 2.0395
-Loss change: -6.2223
+STAGE 0: Chain-of-Thought Training
+  Epoch 1/3, Loss: 0.5836 -> Epoch 3/3, Loss: 0.0021
+  Stage 0 accuracy: 100%
 
->>> After Training:
-Q: What is 3 + 4?
-A: <generated output>
+STAGE 1: Latent Reasoning Training (2 latent tokens)
+  Epoch 1/3, Loss: 0.8711 -> Epoch 3/3, Loss: 0.0039
+  Stage 1 accuracy: 100%
+
+STAGE 2: Latent Reasoning Training (4 latent tokens)
+  Epoch 1/3, Loss: 3.6508 -> Epoch 3/3, Loss: 0.1792
+  Stage 2 accuracy: 67%
 ```
+
+**Key insight**: The model first learns explicit reasoning (Stage 0), then learns to compress that reasoning into hidden states (Stages 1-2). The latent tokens carry reasoning forward without generating text.
 
 ## Environment Setup
 
