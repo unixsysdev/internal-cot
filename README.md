@@ -16,6 +16,7 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 
 - `coconut_qwen.py`: Core CoconutQwen model wrapper
 - `coconut_adaptive.py`: Adaptive Coconut with confidence-based dynamic latent count
+- `coconut_critic.py`: Latent critic for verifying intermediate reasoning steps
 - `dataset_qwen.py`: Dataset processing utilities
 - `run_qwen.py`: Training script (single-GPU and distributed)
 - `utils.py`: Utility functions
@@ -35,6 +36,7 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 
 - `tests/test_coconut_basic.py`: Basic implementation tests
 - `tests/test_adaptive_coconut.py`: Adaptive latent mechanism tests
+- `tests/test_critic.py`: Latent critic tests
 - `demo_train.py`: Interactive training demo
 
 ## Quick Start
@@ -188,6 +190,53 @@ outputs, num_latent_used = model.generate_adaptive(
 ```
 
 The confidence head predicts "readiness to answer" after each latent token, allowing the model to use more thinking for hard problems and less for easy ones.
+
+## Latent Critic for Step Verification
+
+The critic module verifies intermediate reasoning steps without decoding to text:
+
+```python
+from coconut_critic import CoconutWithCritic
+
+model = CoconutWithCritic(
+    base_model,
+    latent_token_id=latent_id,
+    start_latent_id=start_id,
+    end_latent_id=end_id,
+    eos_token_id=eos_id,
+    critic_type="value",  # or "contrastive"
+)
+
+# Training with hindsight experience
+outputs = model(
+    input_ids, attention_mask, labels, position_ids,
+    is_correct=torch.tensor([True, False, True]),  # binary correctness labels
+)
+
+# Combined loss
+loss = outputs.loss + 0.5 * outputs.critic_loss
+```
+
+### Two Critic Architectures
+
+**1. Value Critic** (`critic_type="value"`):
+- Directly predicts P(correct | hidden_state)
+- Trained with binary cross-entropy
+- Positive: hidden states from correct trajectories
+- Negative: hidden states from wrong trajectories
+
+**2. Contrastive Critic** (`critic_type="contrastive"`):
+- Compares current hidden state against memory bank of "good" trajectories
+- Stores reference states from problems solved correctly
+- Higher similarity to good trajectories = higher confidence
+- Uses step-indexed memory (separate references for each reasoning step)
+
+### Use Cases
+
+- **Rejection sampling**: Retry if step value drops below threshold
+- **Best-of-N decoding**: Generate multiple trajectories, pick highest-scoring
+- **Early termination**: Stop thinking when critic confidence plateaus
+- **Training signal**: Use critic loss to shape hidden state geometry
 
 ## Configuration Parameters
 
