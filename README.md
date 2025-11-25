@@ -36,51 +36,45 @@ Coconut enables LLMs to reason in a continuous latent space instead of explicitl
 
 ## Quick Demo
 
-To see the Coconut curriculum training in action:
+To see adaptive Coconut training in action:
 
 ```bash
 # Setup environment
 ./setup_env.sh
 source coconut_env/bin/activate
 
-# Run the demo (~10-15 min on CPU, ~2-3 min on GPU)
+# Run the demo (~15-20 min on CPU, ~3-5 min on GPU)
 python demo_train.py
 ```
 
-The demo shows the **actual Coconut training approach**:
-1. **Stage 0**: Train with full Chain-of-Thought (explicit reasoning)
-2. **Stage 1**: Replace first reasoning step with latent tokens
-3. **Stage 2**: Replace all reasoning steps with latent tokens
+The demo shows **adaptive latent reasoning**:
+1. **Stage 0**: Train with full Chain-of-Thought
+2. **Stages 1-2**: Progressive latent replacement + confidence training
+3. **Inference**: Dynamic latent count based on confidence
 
 Example output:
 ```
-TRAINING FORMAT EXAMPLES:
-Stage 0 (Full CoT):
-  Q: What is 3 + 5?
-  First, I need to add 3 and 5. 3 plus 5 equals 8. Answer: 8
-
-Stage 1 (Replace step 1):
-  Q: What is 3 + 5?
-  <|start-latent|><|latent|><|latent|><|end-latent|> 3 plus 5 equals 8. Answer: 8
-
-Stage 2 (Replace steps 1&2):
-  Q: What is 3 + 5?
-  <|start-latent|><|latent|>...<|end-latent|> Answer: 8
-
 STAGE 0: Chain-of-Thought Training
-  Epoch 1/3, Loss: 0.5836 -> Epoch 3/3, Loss: 0.0021
-  Stage 0 accuracy: 100%
+  Epoch 1: loss=0.7951, conf_loss=0.0000
 
-STAGE 1: Latent Reasoning Training (2 latent tokens)
-  Epoch 1/3, Loss: 0.8711 -> Epoch 3/3, Loss: 0.0039
-  Stage 1 accuracy: 100%
+STAGE 1: Latent Reasoning + Confidence Training
+  Epoch 1: loss=0.6056, conf_loss=0.5630
+  Epoch 3: loss=0.1310, conf_loss=0.0151  <- confidence head learning!
 
-STAGE 2: Latent Reasoning Training (4 latent tokens)
-  Epoch 1/3, Loss: 3.6508 -> Epoch 3/3, Loss: 0.1792
-  Stage 2 accuracy: 67%
+ADAPTIVE INFERENCE DEMO
+[Complexity 1] What is 5 + 3?
+  Latent 1: confidence = 0.016
+  Latent 2: confidence = 0.019
+  ...
+  → Used 6 latent tokens
+
+RESULTS BY COMPLEXITY
+  Complexity 1: avg 6.0 latents, 33% accuracy
+  Complexity 2: avg 6.0 latents, 50% accuracy
+  Complexity 3: avg 6.0 latents, 0% accuracy
 ```
 
-**Key insight**: The model first learns explicit reasoning (Stage 0), then learns to compress that reasoning into hidden states (Stages 1-2). The latent tokens carry reasoning forward without generating text.
+**Note**: With limited training (17 samples, 3 epochs), the confidence head doesn't yet differentiate well between easy/hard problems. With more data and training, simple problems should exit early (fewer latents) while complex ones use more.
 
 ## Environment Setup
 

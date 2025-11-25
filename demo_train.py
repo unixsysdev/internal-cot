@@ -1,87 +1,35 @@
 #!/usr/bin/env python3
 """
-Coconut Curriculum Training Demo for Qwen3-0.6B.
+Adaptive Coconut Training Demo for Qwen3-0.6B.
 
-This script demonstrates the ACTUAL Coconut training approach:
-1. Stage 0: Train on Chain-of-Thought (explicit reasoning steps)
-2. Stage 1: Replace first reasoning step with latent tokens
-3. Stage 2: Replace more reasoning steps with latent tokens
+This script demonstrates:
+1. Curriculum training (CoT -> Latent reasoning)
+2. Adaptive latent count based on confidence
+3. Different latent usage for easy vs hard problems
 
-The key insight: the model learns to compress CoT reasoning into
-continuous hidden states because it was FIRST trained with explicit
-reasoning, then progressively had the text replaced with latent tokens.
+The key insight: the model learns WHEN to stop thinking by training
+a confidence head alongside the main model.
 
 Run with: python demo_train.py
-Expected runtime: ~10-15 minutes on CPU, ~2-3 minutes on GPU
+Expected runtime: ~15-20 minutes on CPU, ~3-5 minutes on GPU
 """
 
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from tqdm import tqdm
 import random
 
-from coconut_qwen import CoconutQwen
+from coconut_adaptive import AdaptiveCoconutQwen
 from dataset_qwen import MyCollator
+from data.reasoning_dataset import get_all_problems, get_train_test_split
 
 
-# Simple arithmetic problems with step-by-step reasoning
-TRAINING_DATA = [
-    {
-        "question": "What is 3 + 5?",
-        "steps": ["First, I need to add 3 and 5.", "3 plus 5 equals 8."],
-        "answer": "8"
-    },
-    {
-        "question": "What is 7 - 2?",
-        "steps": ["First, I need to subtract 2 from 7.", "7 minus 2 equals 5."],
-        "answer": "5"
-    },
-    {
-        "question": "What is 4 + 6?",
-        "steps": ["First, I need to add 4 and 6.", "4 plus 6 equals 10."],
-        "answer": "10"
-    },
-    {
-        "question": "What is 9 - 3?",
-        "steps": ["First, I need to subtract 3 from 9.", "9 minus 3 equals 6."],
-        "answer": "6"
-    },
-    {
-        "question": "What is 2 + 8?",
-        "steps": ["First, I need to add 2 and 8.", "2 plus 8 equals 10."],
-        "answer": "10"
-    },
-    {
-        "question": "What is 6 - 4?",
-        "steps": ["First, I need to subtract 4 from 6.", "6 minus 4 equals 2."],
-        "answer": "2"
-    },
-    {
-        "question": "What is 5 + 5?",
-        "steps": ["First, I need to add 5 and 5.", "5 plus 5 equals 10."],
-        "answer": "10"
-    },
-    {
-        "question": "What is 8 - 1?",
-        "steps": ["First, I need to subtract 1 from 8.", "8 minus 1 equals 7."],
-        "answer": "7"
-    },
-]
-
-TEST_PROBLEMS = [
-    {"question": "What is 3 + 4?", "answer": "7"},
-    {"question": "What is 9 - 5?", "answer": "4"},
-    {"question": "What is 6 + 2?", "answer": "8"},
-]
-
-
-def setup_model_and_tokenizer(device="cpu"):
-    """Load Qwen3-0.6B and set up for Coconut training."""
-    print("Loading Qwen3-0.6B model and tokenizer...")
+def setup_model(device="cpu"):
+    """Load Qwen3-0.6B with adaptive Coconut wrapper."""
+    print("Loading Qwen3-0.6B with Adaptive Coconut...")
 
     tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
-    model = AutoModelForCausalLM.from_pretrained(
+    base_model = AutoModelForCausalLM.from_pretrained(
         "Qwen/Qwen3-0.6B",
         torch_dtype=torch.float32,
     )
@@ -89,72 +37,59 @@ def setup_model_and_tokenizer(device="cpu"):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Add special tokens for Coconut
+    # Add special tokens
     tokenizer.add_tokens(["<|start-latent|>", "<|end-latent|>", "<|latent|>"])
-    model.resize_token_embeddings(len(tokenizer))
+    base_model.resize_token_embeddings(len(tokenizer))
 
     start_id = tokenizer.convert_tokens_to_ids("<|start-latent|>")
     end_id = tokenizer.convert_tokens_to_ids("<|end-latent|>")
     latent_id = tokenizer.convert_tokens_to_ids("<|latent|>")
 
-    coconut_model = CoconutQwen(
-        model,
+    # Create ADAPTIVE model (not regular CoconutQwen)
+    model = AdaptiveCoconutQwen(
+        base_model,
         latent_token_id=latent_id,
         start_latent_id=start_id,
         end_latent_id=end_id,
         eos_token_id=tokenizer.eos_token_id,
+        max_latent_tokens=6,
+        confidence_threshold=0.6,
     )
 
-    coconut_model = coconut_model.to(device)
-
+    model = model.to(device)
     print(f"Model loaded on {device}")
     print(f"Special tokens: start={start_id}, end={end_id}, latent={latent_id}")
 
-    return coconut_model, tokenizer, (start_id, end_id, latent_id)
+    return model, tokenizer, (start_id, end_id, latent_id)
 
 
-def create_stage_batch(
-    samples, tokenizer, start_id, end_id, latent_id,
-    stage, c_thought=2
-):
-    """
-    Create training batch for a specific curriculum stage.
-
-    Stage 0: Full CoT - "Q: ... Step1 Step2 Answer: X"
-    Stage 1: Replace step 1 - "Q: ... <latent><latent> Step2 Answer: X"
-    Stage 2: Replace steps 1&2 - "Q: ... <latent><latent><latent><latent> Answer: X"
-    """
+def create_stage_batch(problems, tokenizer, start_id, end_id, latent_id, stage, c_thought=2):
+    """Create training batch for curriculum stage with complexity-aware latent count."""
     batch_data = []
 
-    for sample in samples:
-        question = sample["question"]
-        steps = sample["steps"]
-        answer = sample["answer"]
+    for problem in problems:
+        question = problem["question"]
+        steps = problem["steps"]
+        answer = problem["answer"]
+        complexity = problem.get("complexity", 2)
 
-        # Encode question
         q_tokens = tokenizer.encode(
-            f"Q: {question}\nLet me think step by step.\n",
+            f"Q: {question}\nThink step by step.\n",
             add_special_tokens=True
         )
-
-        # Encode answer
         a_tokens = tokenizer.encode(f"Answer: {answer}", add_special_tokens=False)
 
         if stage == 0:
-            # Full Chain-of-Thought: all steps as text
+            # Full CoT
             step_text = " ".join(steps) + " "
             step_tokens = tokenizer.encode(step_text, add_special_tokens=False)
-
             input_ids = q_tokens + step_tokens + a_tokens
-            # Train on steps AND answer
             labels = [-100] * len(q_tokens) + step_tokens + a_tokens
-
         else:
-            # Replace first `stage` steps with latent tokens
-            num_latent = min(stage, len(steps)) * c_thought
-            remaining_steps = steps[stage:] if stage < len(steps) else []
+            # Latent tokens based on complexity (more complex = more latent)
+            num_latent = min(stage * c_thought, complexity * c_thought)
+            remaining_steps = steps[min(stage, len(steps)):]
 
-            # Build sequence: Q + <start> + latents + <end> + remaining_steps + answer
             latent_section = [start_id] + [latent_id] * num_latent + [end_id]
 
             if remaining_steps:
@@ -164,12 +99,9 @@ def create_stage_batch(
                 remaining_tokens = []
 
             input_ids = q_tokens + latent_section + remaining_tokens + a_tokens
-
-            # Labels: -100 for question and latent section, train on remaining + answer
             labels = (
                 [-100] * (len(q_tokens) + len(latent_section)) +
-                (remaining_tokens if remaining_tokens else []) +
-                a_tokens
+                remaining_tokens + a_tokens
             )
 
         batch_data.append({
@@ -182,22 +114,20 @@ def create_stage_batch(
     return batch_data
 
 
-def train_epoch(model, data, tokenizer, start_id, end_id, latent_id,
+def train_epoch(model, problems, tokenizer, start_id, end_id, latent_id,
                 optimizer, collator, device, stage, c_thought=2):
-    """Train for one epoch at a given stage."""
+    """Train one epoch with combined loss (main + confidence)."""
     model.train()
     total_loss = 0
+    total_conf_loss = 0
 
-    # Shuffle data
-    shuffled = data.copy()
-    random.shuffle(shuffled)
-
-    # Create batches of size 2
+    random.shuffle(problems)
     batch_size = 2
-    for i in range(0, len(shuffled), batch_size):
-        batch_samples = shuffled[i:i+batch_size]
+
+    for i in range(0, len(problems), batch_size):
+        batch_problems = problems[i:i+batch_size]
         batch_data = create_stage_batch(
-            batch_samples, tokenizer, start_id, end_id, latent_id,
+            batch_problems, tokenizer, start_id, end_id, latent_id,
             stage=stage, c_thought=c_thought
         )
         batch = collator(batch_data)
@@ -215,196 +145,160 @@ def train_epoch(model, data, tokenizer, start_id, end_id, latent_id,
             position_ids=position_ids,
         )
 
-        loss = outputs.loss
+        # Combined loss: main + confidence
+        loss = outputs.loss + 0.1 * outputs.confidence_loss
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item()
+        total_loss += outputs.loss.item()
+        total_conf_loss += outputs.confidence_loss.item()
 
-    return total_loss / (len(data) / batch_size)
+    n_batches = max(1, len(problems) / batch_size)
+    return total_loss / n_batches, total_conf_loss / n_batches
 
 
-def inference_demo(model, tokenizer, start_id, end_id, latent_id, device,
-                   stage, c_thought=2):
-    """Run inference and show results."""
+def adaptive_inference(model, tokenizer, start_id, end_id, latent_id, device, test_problems):
+    """Run adaptive inference showing dynamic latent count."""
     model.eval()
 
-    correct = 0
-    results = []
+    print("\n" + "=" * 60)
+    print("ADAPTIVE INFERENCE DEMO")
+    print("=" * 60)
+    print("The model dynamically chooses how many latent tokens to use")
+    print("based on its confidence. More thinking for hard problems!")
+    print("-" * 60)
 
-    for problem in TEST_PROBLEMS:
+    results_by_complexity = {}
+
+    for problem in test_problems:
         question = problem["question"]
         expected = problem["answer"]
+        complexity = problem.get("complexity", 2)
 
-        # Build input based on stage
+        # Build input WITHOUT latent tokens (adaptive will add them)
         q_tokens = tokenizer.encode(
-            f"Q: {question}\nLet me think step by step.\n",
+            f"Q: {question}\nThink step by step.\n",
             add_special_tokens=True
         )
-
-        if stage == 0:
-            # No latent tokens for stage 0
-            input_tokens = q_tokens
-        else:
-            # Add latent tokens
-            num_latent = stage * c_thought
-            input_tokens = q_tokens + [start_id] + [latent_id] * num_latent + [end_id]
-
-        input_ids = torch.tensor([input_tokens], device=device)
+        input_ids = torch.tensor([q_tokens], device=device)
         attention_mask = torch.ones_like(input_ids)
 
+        # Adaptive generation with verbose output
+        print(f"\n[Complexity {complexity}] {question}")
         with torch.no_grad():
-            outputs = model.generate(
+            outputs, num_latent = model.generate_adaptive(
                 input_ids,
                 attention_mask,
-                max_new_tokens=30,
+                max_new_tokens=25,
+                min_latent=1,
+                max_latent=6,
+                verbose=True,
             )
 
-        generated_tokens = outputs[0][len(input_tokens):].tolist()
+        # Decode only generated part
+        generated_tokens = outputs[0][len(q_tokens) + num_latent + 2:].tolist()
         generated = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-        # Check if answer is correct (simple check)
-        is_correct = expected in generated
-        if is_correct:
-            correct += 1
+        is_correct = expected.lower() in generated.lower()
+        status = "✓" if is_correct else "✗"
 
-        results.append({
-            "question": question,
-            "expected": expected,
-            "generated": generated.strip()[:50],  # Truncate for display
+        print(f"  {status} Expected: {expected}, Got: {generated.strip()[:30]}")
+        print(f"  → Used {num_latent} latent tokens")
+
+        # Track by complexity
+        if complexity not in results_by_complexity:
+            results_by_complexity[complexity] = []
+        results_by_complexity[complexity].append({
+            "latents": num_latent,
             "correct": is_correct
         })
 
-    return results, correct / len(TEST_PROBLEMS)
-
-
-def print_stage_header(stage, total_stages):
-    """Print a nice header for each stage."""
+    # Summary
     print("\n" + "=" * 60)
-    if stage == 0:
-        print(f"STAGE 0: Chain-of-Thought Training")
-        print("Training with FULL explicit reasoning steps")
-        print("Format: Q: ... Step1 Step2 Answer: X")
-    else:
-        print(f"STAGE {stage}: Latent Reasoning Training")
-        print(f"Replacing first {stage} step(s) with latent tokens")
-        if stage == 1:
-            print("Format: Q: ... <latent><latent> Step2 Answer: X")
-        else:
-            print("Format: Q: ... <latent>... Answer: X")
+    print("RESULTS BY COMPLEXITY")
     print("=" * 60)
+
+    for c in sorted(results_by_complexity.keys()):
+        items = results_by_complexity[c]
+        avg_latent = sum(r["latents"] for r in items) / len(items)
+        accuracy = sum(1 for r in items if r["correct"]) / len(items)
+        print(f"  Complexity {c}: avg {avg_latent:.1f} latents, {accuracy*100:.0f}% accuracy")
+
+    return results_by_complexity
 
 
 def main():
-    """Run the curriculum training demo."""
+    """Run the adaptive Coconut demo."""
     print("=" * 60)
-    print("Coconut Curriculum Training Demo")
+    print("Adaptive Coconut Training Demo")
     print("=" * 60)
     print()
-    print("This demo shows how Coconut actually works:")
-    print("1. First train with explicit Chain-of-Thought")
-    print("2. Progressively replace reasoning steps with latent tokens")
-    print("3. Model learns to compress reasoning into hidden states")
+    print("This demo shows ADAPTIVE latent reasoning:")
+    print("1. Train with curriculum (CoT -> Latent)")
+    print("2. Confidence head learns when to stop thinking")
+    print("3. Simple problems = fewer latents, hard = more")
     print()
 
-    # Configuration
     device = "cuda" if torch.cuda.is_available() else "cpu"
     epochs_per_stage = 3
-    c_thought = 2  # Latent tokens per reasoning step
-    learning_rate = 5e-5
-    max_stage = 2  # We have 2 reasoning steps
+    c_thought = 2
+    max_stage = 2
 
     print(f"Device: {device}")
     print(f"Epochs per stage: {epochs_per_stage}")
-    print(f"Latent tokens per step: {c_thought}")
-    print(f"Total stages: {max_stage + 1} (0 to {max_stage})")
     print()
 
     # Setup
-    model, tokenizer, (start_id, end_id, latent_id) = setup_model_and_tokenizer(device)
+    model, tokenizer, (start_id, end_id, latent_id) = setup_model(device)
     collator = MyCollator(tokenizer, latent_id=latent_id, label_pad_token_id=-100)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
 
-    # Show example of each stage format
+    # Get diverse problems
+    train_problems, test_problems = get_train_test_split(test_ratio=0.3)
+    print(f"Training: {len(train_problems)} problems")
+    print(f"Testing: {len(test_problems)} problems")
+
+    # Show problem diversity
     print("\n" + "-" * 60)
-    print("TRAINING FORMAT EXAMPLES:")
+    print("SAMPLE PROBLEMS BY COMPLEXITY:")
     print("-" * 60)
-    sample = TRAINING_DATA[0]
-    print(f"\nOriginal problem:")
-    print(f"  Q: {sample['question']}")
-    print(f"  Steps: {sample['steps']}")
-    print(f"  Answer: {sample['answer']}")
-    print(f"\nStage 0 (Full CoT):")
-    print(f"  Q: {sample['question']}")
-    print(f"  {sample['steps'][0]} {sample['steps'][1]} Answer: {sample['answer']}")
-    print(f"\nStage 1 (Replace step 1):")
-    print(f"  Q: {sample['question']}")
-    print(f"  <|start-latent|><|latent|><|latent|><|end-latent|> {sample['steps'][1]} Answer: {sample['answer']}")
-    print(f"\nStage 2 (Replace steps 1&2):")
-    print(f"  Q: {sample['question']}")
-    print(f"  <|start-latent|><|latent|><|latent|><|latent|><|latent|><|end-latent|> Answer: {sample['answer']}")
+    for c in [1, 2, 3]:
+        samples = [p for p in train_problems if p.get("complexity", 2) == c][:1]
+        for s in samples:
+            print(f"  [{c}] {s['question'][:50]}...")
     print("-" * 60)
 
-    # Track metrics across stages
-    all_losses = []
-    all_accuracies = []
-
-    # Curriculum training loop
+    # Curriculum training
     for stage in range(max_stage + 1):
-        print_stage_header(stage, max_stage)
+        print(f"\n{'=' * 40}")
+        if stage == 0:
+            print("STAGE 0: Chain-of-Thought Training")
+        else:
+            print(f"STAGE {stage}: Latent Reasoning + Confidence Training")
+        print(f"{'=' * 40}")
 
-        stage_losses = []
-
-        # Train for multiple epochs at this stage
         for epoch in range(epochs_per_stage):
-            loss = train_epoch(
-                model, TRAINING_DATA, tokenizer, start_id, end_id, latent_id,
+            loss, conf_loss = train_epoch(
+                model, train_problems, tokenizer, start_id, end_id, latent_id,
                 optimizer, collator, device, stage=stage, c_thought=c_thought
             )
-            stage_losses.append(loss)
-            print(f"  Epoch {epoch + 1}/{epochs_per_stage}, Loss: {loss:.4f}")
+            print(f"  Epoch {epoch + 1}: loss={loss:.4f}, conf_loss={conf_loss:.4f}")
 
-        all_losses.append(stage_losses)
+    # Adaptive inference demo
+    results = adaptive_inference(
+        model, tokenizer, start_id, end_id, latent_id, device, test_problems
+    )
 
-        # Evaluate at end of stage
-        print(f"\n  Inference test (stage {stage}):")
-        results, accuracy = inference_demo(
-            model, tokenizer, start_id, end_id, latent_id, device,
-            stage=stage, c_thought=c_thought
-        )
-        all_accuracies.append(accuracy)
-
-        for r in results:
-            status = "✓" if r["correct"] else "✗"
-            print(f"    {status} Q: {r['question']}")
-            print(f"       Expected: {r['expected']}, Got: {r['generated']}")
-
-        print(f"\n  Stage {stage} accuracy: {accuracy*100:.0f}%")
-
-    # Final summary
     print("\n" + "=" * 60)
-    print("TRAINING COMPLETE - SUMMARY")
+    print("KEY INSIGHT")
     print("=" * 60)
-
-    print("\nLoss progression by stage:")
-    for stage, losses in enumerate(all_losses):
-        print(f"  Stage {stage}: {losses[0]:.4f} -> {losses[-1]:.4f}")
-
-    print("\nAccuracy by stage:")
-    for stage, acc in enumerate(all_accuracies):
-        mode = "CoT" if stage == 0 else f"{stage*c_thought} latent tokens"
-        print(f"  Stage {stage} ({mode}): {acc*100:.0f}%")
-
-    print("\n" + "-" * 60)
-    print("KEY INSIGHT:")
-    print("-" * 60)
-    print("The model first learns to reason with explicit text (Stage 0),")
-    print("then learns to compress that reasoning into latent tokens")
-    print("(Stages 1-2). The hidden states carry the reasoning forward")
-    print("without generating intermediate text.")
+    print("The confidence head learns to predict 'readiness to answer'.")
+    print("After training, the model should use:")
+    print("  - FEWER latent tokens for simple problems (early exit)")
+    print("  - MORE latent tokens for complex problems (keep thinking)")
     print()
-    print("For production training, use run_qwen.py with larger datasets")
-    print("and more epochs per stage.")
+    print("With more training data and epochs, this differentiation")
+    print("becomes more pronounced.")
     print("=" * 60)
 
 
